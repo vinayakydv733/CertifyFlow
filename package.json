@@ -1,0 +1,31 @@
+{
+  "name": "certify-flow",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "dev": "vite",
+    "server": "tsx server/index.ts",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.57.0",
+    "dotenv": "17.2.2",
+    "express": "5.1.0",
+    "googleapis": "156.0.0",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "zod": "3.24.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.13",
+    "@types/react-dom": "19.1.9",
+    "@types/express": "5.0.3",
+    "@vitejs/plugin-react": "5.0.1",
+    "tsx": "4.20.3",
+    "typescript": "5.8.3",
+    "vite": "7.1.7"
+  }
+}
