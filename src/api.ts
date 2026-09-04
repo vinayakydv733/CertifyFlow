@@ -55,3 +55,11 @@ export async function queueEmailJobs(campaignId: string) {
 export async function startGmailConnection() {
   return request<{ url: string }>("/api/gmail/connect", { method: "POST" });
 }
+
+export async function getGmailConnection() {
+  return request<{ connected: boolean; connection: { gmail_address: string } | null }>("/api/gmail/connection");
+}
+
+export async function disconnectGmail() {
+  return request<void>("/api/gmail/connection", { method: "DELETE" });
+}

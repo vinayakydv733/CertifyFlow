@@ -120,6 +120,11 @@ app.get("/api/gmail/callback", async (req, res) => {
     if (error) throw error; res.redirect(`${env.APP_URL}/?gmail=connected`);
   } catch { res.redirect(`${env.APP_URL}/?gmail=failed`); }
 });
+app.get("/api/gmail/connection", requireUser, async (req, res) => {
+  const { data, error } = await supabase.from("email_connections").select("gmail_address,scopes,revoked_at").eq("user_id", (req as AuthenticatedRequest).user.id).maybeSingle();
+  if (error) return res.status(500).json({ error: "Could not load Gmail connection." });
+  res.json({ connected: Boolean(data && !data.revoked_at), connection: data && !data.revoked_at ? data : null });
+});
 app.delete("/api/gmail/connection", requireUser, async (req, res) => {
   const { error } = await supabase.from("email_connections").update({ revoked_at: new Date().toISOString(), encrypted_refresh_token: "" }).eq("user_id", (req as AuthenticatedRequest).user.id);
   if (error) return res.status(500).json({ error: "Could not disconnect Gmail." }); res.status(204).end();
