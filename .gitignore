@@ -1,6 +1,7 @@
 node_modules/
 .pnpm-store/
 dist/
+server-dist/
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts

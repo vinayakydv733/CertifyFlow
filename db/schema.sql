@@ -4,17 +4,9 @@ create type campaign_status as enum ('draft', 'generating', 'generated', 'sendin
 create type generation_status as enum ('pending', 'processing', 'generated', 'failed');
 create type email_status as enum ('pending', 'sending', 'sent', 'failed');
 
-create table users (
-  id uuid primary key,
-  email text not null unique,
-  password_hash text,
-  created_at timestamptz not null default now(),
-  constraint users_password_or_oauth check (password_hash is not null or email is not null)
-);
-
 create table campaigns (
-  id uuid primary key,
-  user_id uuid not null references users(id) on delete cascade,
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
   name varchar(120) not null,
   organization_name varchar(160) not null,
   description varchar(500),
@@ -24,8 +16,22 @@ create table campaigns (
 );
 create index campaigns_owner_updated_idx on campaigns (user_id, updated_at desc);
 
+create or replace function set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create trigger campaigns_set_updated_at
+before update on campaigns
+for each row execute function set_updated_at();
+
 create table templates (
-  id uuid primary key,
+  id uuid primary key default gen_random_uuid(),
   campaign_id uuid not null unique references campaigns(id) on delete cascade,
   storage_key text not null,
   mime_type varchar(20) not null check (mime_type in ('image/png', 'image/jpeg')),
@@ -35,7 +41,7 @@ create table templates (
 );
 
 create table template_fields (
-  id uuid primary key,
+  id uuid primary key default gen_random_uuid(),
   template_id uuid not null references templates(id) on delete cascade,
   variable_name varchar(80) not null,
   x numeric(7,4) not null check (x between 0 and 1),
@@ -52,7 +58,7 @@ create table template_fields (
 create unique index template_fields_variable_idx on template_fields (template_id, variable_name);
 
 create table recipients (
-  id uuid primary key,
+  id uuid primary key default gen_random_uuid(),
   campaign_id uuid not null references campaigns(id) on delete cascade,
   email text not null,
   data jsonb not null default '{}',
@@ -64,7 +70,7 @@ create unique index recipients_unique_email_idx on recipients (campaign_id, lowe
 create index recipients_campaign_idx on recipients (campaign_id, created_at desc);
 
 create table certificates (
-  id uuid primary key,
+  id uuid primary key default gen_random_uuid(),
   campaign_id uuid not null references campaigns(id) on delete cascade,
   recipient_id uuid not null unique references recipients(id) on delete cascade,
   storage_key text,
@@ -76,7 +82,7 @@ create table certificates (
 create index certificates_campaign_status_idx on certificates (campaign_id, status);
 
 create table email_connections (
-  id uuid primary key,
+  id uuid primary key default gen_random_uuid(),
   user_id uuid not null unique references users(id) on delete cascade,
   gmail_address text not null,
   encrypted_refresh_token text not null,
@@ -86,7 +92,7 @@ create table email_connections (
 );
 
 create table email_jobs (
-  id uuid primary key,
+  id uuid primary key default gen_random_uuid(),
   recipient_id uuid not null references recipients(id) on delete cascade,
   certificate_id uuid not null references certificates(id) on delete cascade,
   idempotency_key uuid not null unique,
@@ -97,3 +103,42 @@ create table email_jobs (
   created_at timestamptz not null default now()
 );
 create index email_jobs_pending_idx on email_jobs (status, created_at) where status in ('pending', 'failed');
+
+alter table campaigns enable row level security;
+alter table templates enable row level security;
+alter table template_fields enable row level security;
+alter table recipients enable row level security;
+alter table certificates enable row level security;
+alter table email_connections enable row level security;
+alter table email_jobs enable row level security;
+
+create policy campaigns_owner_policy on campaigns
+  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy templates_owner_policy on templates
+  for all using (exists (select 1 from campaigns where campaigns.id = templates.campaign_id and campaigns.user_id = auth.uid()))
+  with check (exists (select 1 from campaigns where campaigns.id = templates.campaign_id and campaigns.user_id = auth.uid()));
+create policy fields_owner_policy on template_fields
+  for all using (exists (select 1 from templates join campaigns on campaigns.id = templates.campaign_id where templates.id = template_fields.template_id and campaigns.user_id = auth.uid()))
+  with check (exists (select 1 from templates join campaigns on campaigns.id = templates.campaign_id where templates.id = template_fields.template_id and campaigns.user_id = auth.uid()));
+create policy recipients_owner_policy on recipients
+  for all using (exists (select 1 from campaigns where campaigns.id = recipients.campaign_id and campaigns.user_id = auth.uid()))
+  with check (exists (select 1 from campaigns where campaigns.id = recipients.campaign_id and campaigns.user_id = auth.uid()));
+create policy certificates_owner_policy on certificates
+  for all using (exists (select 1 from campaigns where campaigns.id = certificates.campaign_id and campaigns.user_id = auth.uid()))
+  with check (exists (select 1 from campaigns where campaigns.id = certificates.campaign_id and campaigns.user_id = auth.uid()));
+create policy connections_owner_policy on email_connections
+  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy jobs_owner_policy on email_jobs
+  for all using (exists (select 1 from recipients join campaigns on campaigns.id = recipients.campaign_id where recipients.id = email_jobs.recipient_id and campaigns.user_id = auth.uid()))
+  with check (exists (select 1 from recipients join campaigns on campaigns.id = recipients.campaign_id where recipients.id = email_jobs.recipient_id and campaigns.user_id = auth.uid()));
+
+-- The bucket itself should be created as private in the Supabase dashboard or deployment migration.
+create policy certificate_files_owner_read on storage.objects
+  for select to authenticated
+  using (bucket_id = 'certificate-files' and (storage.foldername(name))[1] = auth.uid()::text);
+create policy certificate_files_owner_insert on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'certificate-files' and (storage.foldername(name))[1] = auth.uid()::text);
+create policy certificate_files_owner_delete on storage.objects
+  for delete to authenticated
+  using (bucket_id = 'certificate-files' and (storage.foldername(name))[1] = auth.uid()::text);

@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "vite",
     "server": "tsx server/index.ts",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && tsc -p tsconfig.server.json",
+    "start": "node server-dist/index.js",
     "preview": "vite preview"
   },
   "dependencies": {
