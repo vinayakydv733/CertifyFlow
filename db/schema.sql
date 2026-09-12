@@ -83,7 +83,7 @@ create index certificates_campaign_status_idx on certificates (campaign_id, stat
 
 create table email_connections (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null unique references users(id) on delete cascade,
+  user_id uuid not null unique references auth.users(id) on delete cascade,
   gmail_address text not null,
   encrypted_refresh_token text not null,
   scopes text[] not null,

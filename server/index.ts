@@ -21,10 +21,12 @@ const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
 const campaignSchema = z.object({ name: z.string().trim().min(1).max(120), organizationName: z.string().trim().min(1).max(160), description: z.string().trim().max(500).optional() });
 const recipientSchema = z.object({ name: z.string().trim().min(1).max(160), email: z.string().trim().email().max(320), college: z.string().trim().max(160).optional(), achievement: z.string().trim().max(240).optional() });
 const recipientsSchema = z.object({ recipients: z.array(recipientSchema).min(1).max(10_000) });
+const emailSendSchema = z.object({ to: z.string().trim().email().max(320).optional(), subject: z.string().trim().min(1).max(200).refine((value) => !/[\r\n]/.test(value), "Subject contains invalid characters."), body: z.string().max(20_000), fileName: z.string().trim().min(1).max(160).regex(/^[a-zA-Z0-9._-]+$/), certificateBase64: z.string().min(1).max(15 * 1024 * 1024) });
 const campaignIdSchema = z.string().uuid();
 
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "15mb" }));
 app.disable("x-powered-by");
+app.use((_req, res, next) => { res.setHeader("X-Content-Type-Options", "nosniff"); res.setHeader("X-Frame-Options", "DENY"); res.setHeader("Referrer-Policy", "no-referrer"); next(); });
 
 type AuthenticatedRequest = Request & { user: User };
 async function requireUser(req: Request, res: Response, next: NextFunction) {
@@ -45,7 +47,7 @@ app.get("/api/campaigns", requireUser, async (req, res) => {
 app.post("/api/campaigns", requireUser, async (req, res) => {
   const parsed = campaignSchema.safeParse(req.body); if (!parsed.success) return res.status(400).json({ error: "Please provide a campaign name and organization name." });
   const { data, error } = await supabase.from("campaigns").insert({ user_id: (req as AuthenticatedRequest).user.id, name: parsed.data.name, organization_name: parsed.data.organizationName, description: parsed.data.description || null }).select("id,name,organization_name,description,status,updated_at").single();
-  if (error) return res.status(500).json({ error: "Could not create the campaign." });
+  if (error) { console.error("Campaign creation failed", error); return res.status(500).json({ error: env.APP_URL.includes("localhost") ? `Could not create the campaign: ${error.message}` : "Could not create the campaign." }); }
   res.status(201).json({ campaign: data });
 });
 
@@ -68,6 +70,17 @@ app.post("/api/campaigns/:campaignId/template", requireUser, express.raw({ type:
   const { data, error } = await supabase.from("templates").upsert({ campaign_id: campaignId, storage_key: storageKey, mime_type: contentType }, { onConflict: "campaign_id" }).select("id,storage_key,mime_type").single();
   if (error) return res.status(500).json({ error: "Could not save the certificate template." });
   res.status(201).json({ template: data });
+});
+
+app.get("/api/campaigns/:campaignId/template", requireUser, async (req, res) => {
+  const userId = (req as AuthenticatedRequest).user.id; const campaignId = routeParam(req.params.campaignId);
+  if (!await ownedCampaign(campaignId, userId)) return res.status(404).json({ error: "Campaign not found." });
+  const { data: template, error } = await supabase.from("templates").select("storage_key,mime_type").eq("campaign_id", campaignId).maybeSingle();
+  if (error) return res.status(500).json({ error: "Could not load the certificate template." });
+  if (!template) return res.status(404).json({ error: "No certificate template has been uploaded." });
+  const signed = await supabase.storage.from("certificate-files").createSignedUrl(template.storage_key, 60 * 60);
+  if (signed.error) return res.status(500).json({ error: "Could not access the certificate template." });
+  res.json({ url: signed.data.signedUrl, mimeType: template.mime_type });
 });
 
 app.get("/api/campaigns/:campaignId/recipients", requireUser, async (req, res) => {
@@ -101,6 +114,25 @@ app.post("/api/campaigns/:campaignId/email-jobs", requireUser, async (req, res) 
   const rows = (certificates || []).map((certificate) => ({ recipient_id: certificate.recipient_id, certificate_id: certificate.id, idempotency_key: certificate.id }));
   const result = rows.length ? await supabase.from("email_jobs").upsert(rows, { onConflict: "idempotency_key", ignoreDuplicates: true }).select("id,status") : { data: [], error: null };
   if (result.error) return res.status(500).json({ error: "Could not queue email delivery." }); res.status(202).json({ jobs: result.data || [] });
+});
+
+app.post("/api/email/send", requireUser, async (req, res) => {
+  const parsed = emailSendSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Provide a valid recipient, message, and certificate attachment." });
+  const userId = (req as AuthenticatedRequest).user.id;
+  const { data: connection, error: connectionError } = await supabase.from("email_connections").select("gmail_address,encrypted_refresh_token,revoked_at").eq("user_id", userId).maybeSingle();
+  if (connectionError) return res.status(500).json({ error: "Could not load the Gmail connection." });
+  if (!connection || connection.revoked_at) return res.status(409).json({ error: "Connect Gmail before sending certificates." });
+  try {
+    const oauth = newOAuthClient(); oauth.setCredentials({ refresh_token: decrypt(connection.encrypted_refresh_token) });
+    const gmail = google.gmail({ version: "v1", auth: oauth });
+    const raw = makeMimeMessage({ ...parsed.data, from: connection.gmail_address, to: parsed.data.to || connection.gmail_address });
+    const result = await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
+    res.status(202).json({ messageId: result.data.id });
+  } catch (error) {
+    console.error("Gmail delivery failed", error);
+    res.status(502).json({ error: "Gmail could not deliver this certificate." });
+  }
 });
 
 app.post("/api/gmail/connect", requireUser, (req, res) => {
@@ -139,3 +171,30 @@ function signState(userId: string) { const payload = Buffer.from(JSON.stringify(
 function verifyState(state: string) { const [payload, signature] = state.split("."); if (!payload || !signature) return null; const expected = createHmac("sha256", env.OAUTH_STATE_SECRET).update(payload).digest("base64url"); if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null; try { const data = JSON.parse(Buffer.from(payload, "base64url").toString()) as { userId: string; exp: number }; return data.exp > Date.now() ? data.userId : null; } catch { return null; } }
 function encrypt(value: string) { const key = Buffer.from(env.TOKEN_ENCRYPTION_KEY, "base64"); const iv = randomBytes(12); const cipher = createCipheriv("aes-256-gcm", key, iv); const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]); return `${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`; }
 export function decrypt(value: string) { const [iv, tag, encrypted] = value.split("."); const decipher = createDecipheriv("aes-256-gcm", Buffer.from(env.TOKEN_ENCRYPTION_KEY, "base64"), Buffer.from(iv, "base64url")); decipher.setAuthTag(Buffer.from(tag, "base64url")); return Buffer.concat([decipher.update(Buffer.from(encrypted, "base64url")), decipher.final()]).toString("utf8"); }
+function makeMimeMessage(input: { from: string; to: string; subject: string; body: string; fileName: string; certificateBase64: string }) {
+  const boundary = `certifyflow-${randomBytes(12).toString("hex")}`;
+  const encodedSubject = `=?UTF-8?B?${Buffer.from(input.subject, "utf8").toString("base64")}?=`;
+  const message = [
+    `From: ${input.from}`,
+    `To: ${input.to}`,
+    `Subject: ${encodedSubject}`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    Buffer.from(input.body, "utf8").toString("base64"),
+    "",
+    `--${boundary}`,
+    "Content-Type: image/png",
+    "Content-Transfer-Encoding: base64",
+    `Content-Disposition: attachment; filename=\"${input.fileName}\"`,
+    "",
+    input.certificateBase64,
+    "",
+    `--${boundary}--`,
+  ].join("\r\n");
+  return Buffer.from(message, "utf8").toString("base64url");
+}

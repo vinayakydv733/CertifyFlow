@@ -32,11 +32,11 @@ Keep the UI and a modular API together in one application. Use PostgreSQL for du
 
 ## Current implementation status
 
-The browser now requires Supabase email/password authentication and campaign list/create requests use the authenticated API. The visual workflow after campaign creation remains a client-side preview. Before accepting real certificate jobs, implement the authenticated template, field, recipient, certificate, and email-job routes described below.
+The browser now requires Supabase email/password authentication and campaign list/create requests use the authenticated API. Certificate previews and rendered PNG attachments are generated in the browser; authenticated Gmail delivery is handled server-side through the connected account.
 
 1. Add authenticated campaign/template upload API routes using private object storage and server-side image inspection.
 2. Persist template fields and recipient imports, including CSV quoting and duplicate validation.
-3. Add workers for certificate generation and Gmail OAuth-backed idempotent delivery.
+3. For larger production campaigns, move certificate generation and Gmail delivery into a durable worker; the current UI sends sequentially through the authenticated API.
 4. Add deployment smoke tests for authentication, ownership isolation, private files, and retries.
 
 Do not use the client-side file validation as a security boundary; validate type, signature, size, and ownership again on the server.

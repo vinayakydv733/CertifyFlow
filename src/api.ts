@@ -40,8 +40,16 @@ export async function uploadTemplate(campaignId: string, file: File) {
   const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body.error || "Could not upload the template."); return body;
 }
 
+export async function getTemplate(campaignId: string) {
+  return request<{ url: string; mimeType: string }>(`/api/campaigns/${campaignId}/template`);
+}
+
 export async function saveRecipients(campaignId: string, recipients: { name: string; email: string; college?: string; achievement?: string }[]) {
   return request<{ recipients: unknown[]; duplicatesIgnored: number }>(`/api/campaigns/${campaignId}/recipients`, { method: "POST", body: JSON.stringify({ recipients }) });
+}
+
+export async function getRecipients(campaignId: string) {
+  return request<{ recipients: { id: string; email: string; data: { name?: string; college?: string; achievement?: string }; is_valid: boolean }[] }>(`/api/campaigns/${campaignId}/recipients`);
 }
 
 export async function queueGeneration(campaignId: string) {
@@ -50,6 +58,10 @@ export async function queueGeneration(campaignId: string) {
 
 export async function queueEmailJobs(campaignId: string) {
   return request<{ jobs: unknown[] }>(`/api/campaigns/${campaignId}/email-jobs`, { method: "POST" });
+}
+
+export async function sendEmail(input: { to?: string; subject: string; body: string; fileName: string; certificateBase64: string }) {
+  return request<{ messageId?: string }>("/api/email/send", { method: "POST", body: JSON.stringify(input) });
 }
 
 export async function startGmailConnection() {
